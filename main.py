@@ -28,7 +28,7 @@ parser.add_argument('--cuda', action='store_false', help='use CUDA (default)')
 parser.add_argument('--reload', action='store_true', help='reload data from files or load from cache(default)')
 parser.add_argument('--reverse', action='store_true', help='train the language model from forward(default) or backward')
 parser.add_argument('--seed', type=int, default=1111, help='random seed')
-parser.add_argument('--log-interval', type=int, default=200, metavar='N', help='report interval')
+parser.add_argument('--log-interval', type=int, default=20, metavar='N', help='report interval')
 parser.add_argument('--gpu_id', type=str, default='3', help='the gpu id to train language model')
 args = parser.parse_args()
 
@@ -51,6 +51,12 @@ print(F'train:{len(corpus.train)}\nvalid:{len(corpus.valid)}\ntest:{len(corpus.t
 
 
 def batchify(data, bsz):
+    """
+    取训练集中所有的token，整理成batch_size个长Tensor
+    :param data: 整个数据集的所有token
+    :param bsz: batch_size
+    :return: (long_seq_len, batch_size)
+    """
     nbatch = data.size(0) // bsz
     data = data.narrow(0, 0, nbatch * bsz)
     data = data.view(bsz, -1).t().contiguous()
@@ -65,10 +71,16 @@ def repackage_hidden(h):
         return tuple(repackage_hidden(v) for v in h)
 
 
-def get_batch(source, i):  # 取source中第i个滑动窗口的数据作为data, 第i+1个滑动窗口的数据作为target, (seq_len, batch_size)
-    seq_len = min(args.bptt, len(source) - 1 - i)
-    data = source[i:i + seq_len]
-    target = source[i + 1:i + 1 + seq_len].view(-1)
+def get_batch(source, idx):
+    """
+    取source中第i个滑动窗口的数据作为data, 第i+1个滑动窗口的数据作为target, (seq_len, batch_size)
+    :param source: 整理成batch的数据
+    :param idx: 在长tensor上的index
+    :return: 在长tensor上以index开头，最长为bptt，总共batch_size个样例组成的输入，以及下一个time_step作为gold
+    """
+    seq_len = min(args.bptt, len(source) - 1 - idx)  # 长度一般是bptt，在结尾处委屈求全一下
+    data = source[idx: idx + seq_len]
+    target = source[idx + 1: idx + 1 + seq_len]
     return data, target
 
 
@@ -82,51 +94,51 @@ def train():
     criterion = torch.nn.CrossEntropyLoss()
     print('start training...')
     hidden = model.init_hidden(args.batch_size)
+    epoch_start_time = time.time()
 
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(args.epochs):
+
+        model.eval()  # 在validation上测试
+        total_loss = 0.
+        with torch.no_grad():
+            for idx in range(0, val_data.size(0) - 1, args.bptt):
+                data, targets = get_batch(val_data, idx)
+                output, hidden = model(data, hidden)
+                output_flat = output.view(-1, ntokens)  # (seq_len, batch, ntokens) -> (seq_len*batch, ntokens)
+                total_loss += len(output) * criterion(output_flat, targets.view(-1)).item()
+                hidden = repackage_hidden(hidden)
+        val_loss = total_loss / len(val_data)
+        best_val_loss = min(best_val_loss, val_loss)
+        print('-' * 100)
+        print('| end of epoch {:3d} | time: {:5.2f}s | valid loss {:5.2f} | valid ppl {:8.2f} | best valid ppl {:8.2f}'
+              .format(epoch, (time.time() - epoch_start_time), val_loss, math.exp(val_loss), math.exp(best_val_loss)))
+        print('-' * 100)
         epoch_start_time = time.time()
-        model.train()
+
+        model.train()  # 在training set上训练
         total_loss = 0.
         start_time = time.time()
-        for batch, i in enumerate(range(0, train_data.size(0) - 1, args.bptt)):
-            data, targets = get_batch(train_data, i)
+        for i, idx in enumerate(range(0, train_data.size(0) - 1, args.bptt)):
+            data, targets = get_batch(train_data, idx)
             hidden = repackage_hidden(hidden)
-            model.zero_grad()
+            model.zero_grad()  # 求loss和梯度
             output, hidden = model(data, hidden)
-            loss = criterion(output.view(-1, ntokens), targets)
+            loss = criterion(output.view(-1, ntokens), targets.view(-1))
             loss.backward()
+            total_loss += loss.item()
 
-            torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)  # 用梯度更新参数
             for p in model.parameters():
                 p.data.add_(-args.lr, p.grad.data)
 
-            total_loss += loss.item()
-
-            if batch % args.log_interval == 0 and batch > 0:
+            if i % args.log_interval == 0 and i > 0:
                 cur_loss = total_loss / args.log_interval
                 elapsed = time.time() - start_time
                 print('| epoch {:3d} | {:5d}/{:5d} batches | lr {:02.2f} | ms/batch {:5.2f} |loss {:5.2f} | ppl {:8.2f}'
-                      .format(epoch, batch, len(train_data) // args.bptt, args.lr, elapsed * 1000 / args.log_interval,
+                      .format(epoch + 1, i, len(train_data) // args.bptt, args.lr, elapsed * 1000 / args.log_interval,
                               cur_loss, math.exp(cur_loss)))
                 total_loss = 0
                 start_time = time.time()
-
-        model.eval()
-        total_loss = 0.
-        hidden = model.init_hidden(args.batch_size)  # 隐层初始化为零
-        with torch.no_grad():
-            for i in range(0, val_data.size(0) - 1, args.bptt):
-                data, targets = get_batch(val_data, i)
-                output, hidden = model(data, hidden)
-                output_flat = output.view(-1, ntokens)  # (seq_len, batch, ntokens) -> (seq_len*batch, ntokens)
-                total_loss += len(data) * criterion(output_flat, targets).item()
-                hidden = repackage_hidden(hidden)
-        val_loss = total_loss / len(val_data)
-        print('-' * 89)
-        best_val_loss = min(best_val_loss, val_loss)
-        print('| end of epoch {:3d} | time: {:5.2f}s | valid loss {:5.2f} | valid ppl {:8.2f} | best valid ppl {:8.2f}'
-              .format(epoch, (time.time() - epoch_start_time), val_loss, math.exp(val_loss), math.exp(best_val_loss)))
-        print('-' * 89)
 
         if val_loss == best_val_loss:  # Save the model if the validation loss is best so far.
             torch.save(model, os.path.join(args.save, 'model.pkl'))
