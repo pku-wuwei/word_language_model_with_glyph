@@ -6,14 +6,15 @@ from PIL import ImageFont
 import json
 
 default_fontsize = 12
-default_font = ImageFont.truetype('/data/nfsdata/nlp/fonts/Noto-hinted/NotoSansCJKsc-Regular.otf', default_fontsize)
+default_font = ImageFont.truetype('/data/nfsdata/nlp/fonts/rare/STXINGKA.TTF', default_fontsize)
 
 with open(os.path.join('/data/nfsdata/nlp/projects/glyph_lm/', 'dictionary.json')) as fo:
     idx2word = json.load(fo)['idx2word']
 
 
-def vocab_glyph_embedding(font=default_font):
-    r = np.array([np.reshape(render_text_with_token_id(i, font), -1) for i in range(len(idx2word))])
+def vocab_glyph_embedding(font_path='/data/nfsdata/nlp/fonts/rare/STXINGKA.TTF', font_size=12):
+    font = ImageFont.truetype(font_path, font_size)
+    r = np.array([render_text_with_token_id(i, font) for i in range(len(idx2word))])
     print(r.shape)
     return r
 

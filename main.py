@@ -22,22 +22,26 @@ parser.add_argument('--lr', type=float, default=20, help='initial learning rate'
 parser.add_argument('--clip', type=float, default=0.25, help='gradient clipping')
 parser.add_argument('--epochs', type=int, default=500, help='upper epoch limit')
 parser.add_argument('--batch_size', type=int, default=500, metavar='N', help='batch size')
-parser.add_argument('--bptt', type=int, default=35, help='sequence length')
-parser.add_argument('--dropout', type=float, default=0.2, help='dropout applied to layers (0 = no dropout)')
+parser.add_argument('--use_glyph', action='store_true', help='use glyph in word embedding')
 parser.add_argument('--tied', action='store_true', help='tie the word embedding and softmax weights(default)')
-parser.add_argument('--cuda', action='store_false', help='use CUDA (default)')
+parser.add_argument('--font_size', type=int, default=12, help='fontsize for glyph')
+parser.add_argument('--font_path', type=str, default='/data/nfsdata/nlp/fonts/Noto-hinted/NotoSansCJKsc-Regular.otf', help='the path of font for glyph')
+parser.add_argument('--dropout', type=float, default=0.2, help='dropout applied to layers (0 = no dropout)')
+parser.add_argument('--no_cuda', action='store_true', help='use CUDA (default) or not')
 parser.add_argument('--reload', action='store_true', help='reload data from files or load from cache(default)')
 parser.add_argument('--reverse', action='store_true', help='train the language model from forward(default) or backward')
 parser.add_argument('--seed', type=int, default=1111, help='random seed')
 parser.add_argument('--log-interval', type=int, default=20, metavar='N', help='report interval')
-parser.add_argument('--gpu_id', type=str, default='1', help='the gpu id to train language model')
+parser.add_argument('--gpu_id', type=str, default='0', help='the gpu id to train language model')
+parser.add_argument('--bptt', type=int, default=35, help='sequence length')
+
 args = parser.parse_args()
 
 os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu_id
 torch.manual_seed(args.seed)
-if torch.cuda.is_available() and not args.cuda:
-    print("WARNING: You have a CUDA device, so you should probably run with --cuda")
-device = torch.device("cuda" if args.cuda else "cpu")
+if torch.cuda.is_available() and args.no_cuda:
+    print("WARNING: You have a CUDA device, so you should probably run without --no_cuda")
+device = torch.device("cpu" if args.no_cuda else "cuda")
 
 if args.reload:
     print('Producing dataset...')
@@ -91,7 +95,17 @@ def train():
     ntokens = len(corpus.dictionary)
     train_data = batchify(corpus.train, args.batch_size)  # num_batches, batch_size
     val_data = batchify(corpus.valid, args.batch_size)
-    model = RNNModel(args.model, ntokens, args.emsize, args.nfeat, args.nhid, args.nlayers, args.dropout, args.tied).to(device)
+    model = RNNModel(rnn_type=args.model,
+                     ntoken=ntokens,
+                     ninp=args.emsize,
+                     nfeat=args.nfeat,
+                     nhid=args.nhid,
+                     nlayers=args.nlayers,
+                     font_path=args.font_path,
+                     font_size=args.font_size,
+                     dropout=args.dropout,
+                     tie_weights=args.tied,
+                     ).to(device)
     criterion = torch.nn.CrossEntropyLoss()
     print('start training...')
     hidden = model.init_hidden(args.batch_size)
@@ -115,6 +129,10 @@ def train():
               .format(epoch, (time.time() - epoch_start_time), val_loss, math.exp(val_loss), math.exp(best_val_loss)))
         print('-' * 100)
         epoch_start_time = time.time()
+        if val_loss == best_val_loss:  # Save the model if the validation loss is best so far.
+            torch.save(model, os.path.join(args.save, 'model.pkl'))
+        else:
+            args.lr /= 4.0
 
         model.train()  # 在training set上训练
         total_loss = 0.
@@ -140,11 +158,6 @@ def train():
                               cur_loss, math.exp(cur_loss)))
                 total_loss = 0
                 start_time = time.time()
-
-        if val_loss == best_val_loss:  # Save the model if the validation loss is best so far.
-            torch.save(model, os.path.join(args.save, 'model.pkl'))
-        else:
-            args.lr /= 4.0
 
 
 if __name__ == '__main__':
