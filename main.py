@@ -27,7 +27,6 @@ parser.add_argument('--tied', action='store_true', help='tie the word embedding 
 parser.add_argument('--font_size', type=int, default=12, help='fontsize for glyph')
 parser.add_argument('--font_path', type=str, default='/data/nfsdata/nlp/fonts/Noto-hinted/NotoSansCJKsc-Regular.otf', help='the path of font for glyph')
 parser.add_argument('--dropout', type=float, default=0.2, help='dropout applied to layers (0 = no dropout)')
-parser.add_argument('--no_cuda', action='store_true', help='use CUDA (default) or not')
 parser.add_argument('--reload', action='store_true', help='reload data from files or load from cache(default)')
 parser.add_argument('--reverse', action='store_true', help='train the language model from forward(default) or backward')
 parser.add_argument('--seed', type=int, default=1111, help='random seed')
@@ -39,9 +38,7 @@ args = parser.parse_args()
 
 os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu_id
 torch.manual_seed(args.seed)
-if torch.cuda.is_available() and args.no_cuda:
-    print("WARNING: You have a CUDA device, so you should probably run without --no_cuda")
-device = torch.device("cpu" if args.no_cuda else "cuda")
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 if args.reload:
     print('Producing dataset...')
@@ -73,7 +70,7 @@ def repackage_hidden(h):
     if isinstance(h, torch.Tensor):  # 普通RNN
         return h.detach()
     else:  # LSTM
-        return tuple(repackage_hidden(v) for v in h)
+        return [s.detach() for s in h]
 
 
 def get_batch(source, idx):
@@ -107,6 +104,7 @@ def train():
                      tie_weights=args.tied,
                      ).to(device)
     criterion = torch.nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     print('start training...')
     hidden = model.init_hidden(args.batch_size)
     epoch_start_time = time.time()
@@ -147,8 +145,9 @@ def train():
             total_loss += loss.item()
 
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)  # 用梯度更新参数
-            for p in model.parameters():
-                p.data.add_(-args.lr, p.grad.data)
+            optimizer.step()
+            # for p in model.parameters():
+            #     p.data.add_(-args.lr, p.grad.data)
 
             if i % args.log_interval == 0 and i > 0:
                 cur_loss = total_loss / args.log_interval
